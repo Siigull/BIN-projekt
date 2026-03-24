@@ -1,3 +1,4 @@
 Make some graph comparison alg, which doesnt rely on ids and actually checks if it is the same circuit.
 
 Thinking about having a optimization which reshapes the graph during.
+  Note 7x7 can be the same as 1x7. 
