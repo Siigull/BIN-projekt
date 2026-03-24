@@ -1,0 +1,17 @@
+čas t = 0;
+
+náhodná inicializace chromozomů v P(t);
+
+do {
+  vyhodnocení fitness všech jedinců v P(t);
+  vyber všechny jedince do prostoru páření;
+
+  t = t + 1;
+  do {
+    náhodně vyber dva rodiče z prostoru páření;
+    pomocí operátoru krížení vytvoř dva potomky;
+    aplikuj náhodnou mutaci na potomky;
+    utvoř P(t) nahrazením jedinců v P(t-1);
+
+  } until (P(t) je naplněna novými potomky);
+} until (splněna podmínka ukončení);
