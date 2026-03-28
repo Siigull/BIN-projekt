@@ -17,11 +17,11 @@ int bestblk;
 int *vystupy;               //pole vystupnich hodnot pro vyhodnocovani fce
 int *pouzite;               //pole, kde kazda polozka odpovida bloku a urcuje zda se jedna o pouzity blok
 
-int param_m = PARAM_M;            //pocet sloupcu
-int param_n = PARAM_N;            //pocet radku
-int param_in = PARAM_IN;          //pocet vstupu komb. obvodu
-int param_out = PARAM_OUT;        //pocet vystupu komb. obvodu
-int param_populace = POPULACE_MAX;//pocet jedincu populace
+int param_m = PARAM_M;             //pocet sloupcu
+int param_n = PARAM_N;             //pocet radku
+int param_in = PARAM_IN;           //pocet vstupu komb. obvodu
+int param_out = PARAM_OUT;         //pocet vystupu komb. obvodu
+int param_populace = POPULACE_MAX; //pocet jedincu populace
 int block_in = 2;             //pocet vstupu  jednoho bloku (neni impl pro zmenu)
 int l_back = L_BACK;              // 1 (pouze predchozi sloupec)  .. param_m (maximalni mozny rozsah);
 
