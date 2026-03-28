@@ -4,10 +4,12 @@
 #include <string>
 #include <string.h>
 #include <unistd.h>
+#include <assert.h>
 #include "cgp.h"
 
 typedef int *chromozom;              //dynamicke pole int, velikost dana m*n*(vstupu bloku+vystupu bloku) + vystupu komb
 chromozom *populace[POPULACE_MAX];   //pole ukazatelu na chromozomy jedincu populace
+chromozom* populace_arena = nullptr; //populace definovana za sebou kvůli mezipameti
 int fitt[POPULACE_MAX];              //fitness jedincu populace
 int uzitobloku(chromozom p_chrom);
 
@@ -35,6 +37,11 @@ int maxidx_out  = param_n*param_m + param_in; //max. index pouzitelny jako vstup
 int maxfitness  = 0; //max. hodnota fitness
 
 int fitpop, maxfitpop; //fitness populace
+
+//Rozšíření pro 
+double fitepsilon = 0.95; //Splňuje cíl operace v epsilon zlomku populace = uspech
+int fitnessepsilon = 0; //Nastaven v main(). Epsilon přepočítán na počet správných výsledků.
+int maxblkfitness = PARAM_M * PARAM_N; //max. hodnota fitness obsahu obvodu
 
 typedef struct { //struktura obsahujici mozne hodnoty vstupnich poli chromozomu pro urcity sloupec
     int pocet;   //pouziva se pri generovani noveho cisla pri mutaci
@@ -206,6 +213,18 @@ inline void ohodnoceni(int *vstup_komb, int minidx, int maxidx, int ignoreidx) {
 
         vstup_komb += param_out; //posun na dalsi vstupni kombinace
     }
+
+    // int blk_fit;
+    // for (int i=minidx; i < maxidx; i++) {
+    //     if (i == ignoreidx) continue;
+
+    //     //pokud je fitness obvodu větší než požadovaná řešíme jen obsah.
+    //     //pokud ale není, pořád chceme optimalizovat podle fitness.
+    //     if (fitt[i] >= fitnessepsilon) {
+    //         blk_fit = maxblkfitness - uzitobloku((chromozom)*populace[i]);
+    //         fitt[i] = blk_fit + maxfitness;
+    //     }
+    // }
 }
 
 //-----------------------------------------------------------------------
@@ -257,14 +276,34 @@ int main(int argc, char* argv[])
 
     init_data(tdata); //inicializace dat
 
-    srand((unsigned) time(NULL)); //inicializace pseudonahodneho generatoru
+    srand(42); //inicializace pseudonahodneho generatoru
 
     param_fitev = DATASIZE / (param_in+param_out); //Spocitani poctu pruchodu pro ohodnoceni
     maxfitness = param_fitev*param_out*32;         //Vypocet max. fitness
+    fitnessepsilon = (int)(maxfitness * fitepsilon);
+    assert(maxfitness + maxblkfitness > 0); //Sanity check
     
+    //Not cache local
+    //Edit delete if you use this
     for (int i=0; i < param_populace; i++) //alokace pameti pro chromozomy populace
         populace[i] = new chromozom [outputidx + param_out];
-    
+
+    // // Cache local equivalent. Could fail if too big.
+    // // chromozom* populace_arena = nullptr;
+    // size_t n_jeden_chromozon = outputidx + param_out;
+    // try {
+    //     int* raw_arena = new int[param_populace * n_jeden_chromozon];
+    //     populace_arena = (chromozom*)raw_arena; 
+    //     for (int i = 0; i < param_populace; i++) {
+    //         populace[i] = (chromozom*)(raw_arena + (n_jeden_chromozon * i));
+    //     }
+    // }
+    // catch (const std::bad_alloc& e) {
+    //     printf("Fallback to individual chromozome allocation!\n");
+    //     for (int i=0; i < param_populace; i++) 
+    //     populace[i] = new chromozom [outputidx + param_out];
+    // }
+
     //---------------------------------------------------------------------------
     // Vytvoreni LOOKUP tabulky pro rychle zjisteni poctu nenulovych bitu v bytu
     //---------------------------------------------------------------------------
@@ -281,21 +320,24 @@ int main(int argc, char* argv[])
     //-----------------------------------------------------------------------
     //Priprava pole moznych hodnot vstupu pro sloupec podle l-back a ostatnich parametru
     //-----------------------------------------------------------------------
-    sloupce_val = new sl_rndval *[param_m];
+    sloupce_val = new sl_rndval *[param_m]; // 1. Array of pointers
+    
     for (int i=0; i < param_m; i++) {
-        sloupce_val[i] = new sl_rndval;
+        sloupce_val[i] = new sl_rndval; // 2. Allocate the struct itself
 
         int minidx = param_n*(i-l_back) + param_in;
-        if (minidx < param_in) minidx = param_in; //vystupy bloku zacinaji od param_in do param_in+m*n
+        if (minidx < param_in) minidx = param_in; 
         int maxidx = i*param_n + param_in;
 
         sloupce_val[i]->pocet = param_in + maxidx - minidx;
+        
+        // 3. Allocate the integer array inside the struct
         sloupce_val[i]->hodnoty = new int [sloupce_val[i]->pocet];
 
         int j=0;
-        for (int k=0; k < param_in; k++,j++) //vlozeni indexu vstupu komb. obvodu
+        for (int k=0; k < param_in; k++,j++) 
             sloupce_val[i]->hodnoty[j] = k;
-        for (int k=minidx; k < maxidx; k++,j++) //vlozeni indexu moznych vstupu ze sousednich bloku vlevo
+        for (int k=minidx; k < maxidx; k++,j++) 
             sloupce_val[i]->hodnoty[j] = k;
     }
 
@@ -467,8 +509,19 @@ int main(int argc, char* argv[])
         if (bestfit == maxfitness) 
            run_succ++; 
     } //runs
+
+    //Not cache local
     for (int i=param_populace-1; i >= 0; i--)
-        delete[] populace[i];
-    printf("Successful runs: %d/%d (%5.1f%%)",run_succ, PARAM_RUNS, 100*run_succ/(float)PARAM_RUNS);
+    delete[] populace[i];
+
+    printf("Successful runs: %d/%d (%5.1f%%)\n",run_succ, PARAM_RUNS, 100*run_succ/(float)PARAM_RUNS);
+
+    // if (populace_arena) {
+    //     delete[] (int*)populace_arena;
+        
+    // } else {
+    //     for (int i = param_populace - 1; i >= 0; i--)
+    //         delete[] populace[i];
+    // }
     return 0;
 }
