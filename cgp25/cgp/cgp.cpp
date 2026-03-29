@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include <assert.h>
 #include <immintrin.h>
+#include <vector>
+#include <algorithm>
 #include "cgp.h"
 
 typedef int *chromozom;              //dynamicke pole int, velikost dana m*n*(vstupu bloku+vystupu bloku) + vystupu komb
@@ -154,44 +156,87 @@ inline int popcount_256_avx2(__m256i v) {
            _mm256_extract_epi64(total, 3);
 }
 
-inline int fitness(chromozom p_chrom, 
-                   const __m256i* __restrict p_svystup, 
-                   __m256i valid_mask) {
+struct ActiveChrom {
+    struct Node { int in1, in2, fce, out_idx; };
+    std::vector<Node> nodes;  // Only active nodes, topologically sorted
+    int out_indices[PARAM_OUT];
+    int active_count;
+};
+
+ActiveChrom active_popul[POPULACE_MAX];
+
+void precompute_active(int popul_index) {
+    ActiveChrom& ac = active_popul[popul_index];
+    chromozom p_chrom = (chromozom)populace[popul_index];
+    ac.nodes.clear();
+
+    memset(pouzite, 0, maxidx_out*sizeof(int));
+
+    int* p_pom = p_chrom + outputidx;
+    for (int i = 0; i < param_out; i++) {
+        int in = *p_pom++;
+        ac.out_indices[i] = in;
+        pouzite[in] = 1;
+    }
+
+    std::vector<ActiveChrom::Node> rev;
+    p_pom = p_chrom + outputidx - 1;
+    int idx_loop = maxidx_out-1;
+    for (int i = param_m - 1; i >= 0; i--) {
+        for (int j = param_n - 1; j >= 0; j--, idx_loop--) {
+            if (pouzite[idx_loop]) {
+                int fce = *p_pom--;
+                int in2 = *p_pom--;
+                pouzite[in2] = 1;
+                int in1 = *p_pom--;
+                pouzite[in1] = 1;
+
+                int out_idx = (i * param_n + j) + param_in;
+                rev.push_back({in1, in2, fce, out_idx});
+            } else {
+                p_pom -= (block_in + 1); // +1 for function
+            }
+        }
+    }
+
+    std::reverse(rev.begin(), rev.end());
+    ac.nodes = std::move(rev);
+    ac.active_count = (int)ac.nodes.size();
+}
+
+inline int fitness(int pop_idx, const __m256i* __restrict p_svystup, __m256i valid_mask) {
+    const ActiveChrom& ac = active_popul[pop_idx];
     int i, j;
     // We assume 'vystupy' is now an array of __m256i
     __m256i *v_vystupy = (__m256i*)vystupy;
     __m256i *p_v_vystup = v_vystupy + param_in;
 
-    for (i = 0; i < param_m; i++) {
-        for (j = 0; j < param_n; j++) {
-            // Fetch inputs (Still 32-bit indices from chromosome)
-            __m256i in1 = v_vystupy[*p_chrom++];
-            __m256i in2 = v_vystupy[*p_chrom++];
-            int fce = *p_chrom++;
+    static const __m256i ones = _mm256_set1_epi32(-1);
 
-            __m256i res;
+    for (const auto& node : ac.nodes) {
+        // Fetch inputs (Still 32-bit indices from chromosome)
+        __m256i in1 = v_vystupy[node.in1];
+        __m256i in2 = v_vystupy[node.in2];
 
-            // NOTE(Sigull): Tried precomputing all values into an array -> was slower than ifs
-            // NOTE(Sigull): Array function lookup table was also slower.
-            if      (fce == 0) res = in1;
-            else if (fce == 1) res = _mm256_and_si256(in1, in2);
-            else if (fce == 2) res = _mm256_or_si256(in1, in2);
-            else if (fce == 3) res = _mm256_xor_si256(in1, in2);
-            else if (fce == 4) res = _mm256_andnot_si256(in1, _mm256_set1_epi32(-1)); // NOT in1
-            else if (fce == 7) res = _mm256_xor_si256(_mm256_and_si256(in1, in2), _mm256_set1_epi32(-1)); // NAND
-            else if (fce == 8) res = _mm256_xor_si256(_mm256_or_si256(in1, in2), _mm256_set1_epi32(-1));  // NOR
-            else assert(false && "Should never get here.");
+        __m256i res;
 
-            *p_v_vystup++ = res;
-        }
+        // NOTE(Sigull): Tried precomputing all values into an array -> was slower than ifs
+        // NOTE(Sigull): Array function lookup table was also slower.
+        if      (node.fce == 0) res = in1;
+        else if (node.fce == 1) res = _mm256_and_si256(in1, in2);
+        else if (node.fce == 2) res = _mm256_or_si256(in1, in2);
+        else if (node.fce == 3) res = _mm256_xor_si256(in1, in2);
+        else if (node.fce == 4) res = _mm256_andnot_si256(in1, ones); // NOT in1
+        else if (node.fce == 7) res = _mm256_xor_si256(_mm256_and_si256(in1, in2), ones); // NAND
+        else if (node.fce == 8) res = _mm256_xor_si256(_mm256_or_si256(in1, in2), ones);  // NOR
+        else assert(false && "Should never get here.");
+
+        v_vystupy[node.out_idx] = res;
     }
 
     int total_correct = 0;
     for (i = 0; i < param_out; i++) {
-        __m256i actual = v_vystupy[*p_chrom++];
-        __m256i expected = p_svystup[i];
-
-        __m256i matched = _mm256_xor_si256(_mm256_xor_si256(actual, expected), _mm256_set1_epi32(-1));
+        __m256i matched = _mm256_xor_si256(_mm256_xor_si256(v_vystupy[ac.out_indices[i]], p_svystup[i]), ones);
         matched = _mm256_and_si256(matched, valid_mask);
         total_correct += popcount_256_avx2(matched);
     }
@@ -224,7 +269,7 @@ inline void ohodnoceni(__m256i *vstup_komb, int minidx, int maxidx, int ignoreid
         for (int i = minidx; i < maxidx; i++) {
             if (i == ignoreidx) continue;
 
-            fitt[i] += fitness((chromozom)populace[i], expected_outputs, current_mask);
+            fitt[i] += fitness(i, expected_outputs, current_mask);
         }
     }
 }
@@ -437,6 +482,8 @@ int main(int argc, char* argv[])
             }
             for (int j=outputidx; j < outputidx+param_out; j++)  //napojeni vystupu
                 *p_chrom++ = rand() % maxidx_out;
+
+            precompute_active(i);
         }
 
         //-----------------------------------------------------------------------
@@ -484,6 +531,7 @@ int main(int argc, char* argv[])
 
                 p_chrom = (int *) copy_chromozome(populace[bestfit_idx],populace[midx]);
                 mutace(p_chrom);
+                precompute_active(i);
             }
 
             //-----------------------------------------------------------------------
