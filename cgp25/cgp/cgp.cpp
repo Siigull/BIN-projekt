@@ -29,6 +29,12 @@ int param_out = PARAM_OUT;         //pocet vystupu komb. obvodu
 int param_populace = POPULACE_MAX; //pocet jedincu populace
 int block_in = 2;             //pocet vstupu  jednoho bloku (neni impl pro zmenu)
 int l_back = L_BACK;              // 1 (pouze predchozi sloupec)  .. param_m (maximalni mozny rozsah);
+#ifdef CHROMOZOME_LOAD
+char chrin[] = CHROMOZOME_LOAD;
+#else
+char chrin = null;
+#endif
+
 
 int param_fitev;  //pocet pruchodu pro ohodnoceni jednoho chromozomu, vznikne jako (pocet vstupnich dat/(pocet vstupu+pocet vystupu))
 
@@ -93,6 +99,82 @@ void print_xls(FILE *xlsfil) {
   for (int i=0; i < param_populace;  i++)
       fprintf(xlsfil, "%d\t",fitt[i]);
   fprintf(xlsfil, "\n");
+}
+
+//-----------------------------------------------------------------------
+//Nacteni chromozomu
+//=======================================================================
+//str string ve kterem je chromozom
+//nstr delka str
+//p_chrom ukazatel na chromozom
+//-----------------------------------------------------------------------
+bool load_chrom(char* str, size_t nstr, chromozom p_chrom){
+#define NEXT() do {\
+    if (++stri >= nstr) { return false; }\
+} while(false);
+#define SKIP_WHITE() do {\
+    if (stri >= nstr) return false;\
+    while (isspace(str[stri])) {\
+        stri++;\
+        if (stri >= nstr) return false;\
+    }\
+} while(false);
+#define EXPECT(Mchr) do {\
+    SKIP_WHITE();\
+    if (str[stri] != (Mchr)) return false;\
+    NEXT();\
+} while(false);
+#define READ_INT(num) do {\
+    SKIP_WHITE();\
+    num = strtol(str + stri, &endptr, 10);\
+    if (endptr == (str + stri)) return false;\
+    stri = endptr - str;\
+} while(false);
+
+    char* endptr;
+    int stri=0, buf;
+    EXPECT('{');
+    READ_INT(buf); if(param_in != buf)  return false; EXPECT(',');
+    READ_INT(buf); if(param_out != buf) return false; EXPECT(',');
+    READ_INT(buf); if(param_m != buf)   return false; EXPECT(',');
+    READ_INT(buf); if(param_n != buf)   return false; EXPECT(',');
+    READ_INT(buf); if(block_in != buf)  return false; EXPECT(',');
+    READ_INT(buf); if(l_back != buf)    return false; EXPECT(',');
+    READ_INT(buf); // uzitobloku, počítáme funkcí, není caching
+    EXPECT('}');
+
+    for (int i=0; i < param_m; i++) {
+        for (int j=0; j < param_n; j++) {
+            EXPECT('(');
+            EXPECT('[');
+            READ_INT(buf); int node_start = (buf-param_in)*3;
+            EXPECT(']');
+            READ_INT(buf); p_chrom[node_start]     = buf; // in1
+            EXPECT(',');
+            READ_INT(buf); p_chrom[node_start + 1] = buf; // in2
+            EXPECT(',');
+            READ_INT(buf); p_chrom[node_start + 2] = buf; // func
+            if (buf >= FUNCTIONS) return false;
+            EXPECT(')');
+        }
+    }
+
+    EXPECT('(');
+    for (int i=0; i < param_out-1; i++) {
+        READ_INT(buf); *(p_chrom + outputidx + i) = buf;
+        EXPECT(',');
+    }
+
+    // Just because last doesn't have comma
+    READ_INT(buf); *(p_chrom + outputidx + (param_out-1)) = buf;
+    EXPECT(')');
+
+    return true;
+
+#undef NEXT
+#undef SKIP_WHITE
+#undef EXPECT
+#undef READ_INT
 }
 
 //-----------------------------------------------------------------------
@@ -227,6 +309,8 @@ inline int fitness(int pop_idx, const __m256i* __restrict p_svystup, __m256i val
         else if (node.fce == 2) res = _mm256_or_si256(in1, in2);
         else if (node.fce == 3) res = _mm256_xor_si256(in1, in2);
         else if (node.fce == 4) res = _mm256_andnot_si256(in1, ones); // NOT in1
+        else if (node.fce == 5) res = _mm256_andnot_si256(in2, ones); // NOT in2
+        else if (node.fce == 6) res = _mm256_and_si256(in1, _mm256_andnot_si256(in2, ones));
         else if (node.fce == 7) res = _mm256_xor_si256(_mm256_and_si256(in1, in2), ones); // NAND
         else if (node.fce == 8) res = _mm256_xor_si256(_mm256_or_si256(in1, in2), ones);  // NOR
         else assert(false && "Should never get here.");
@@ -248,7 +332,7 @@ inline int fitness(int pop_idx, const __m256i* __restrict p_svystup, __m256i val
 //OHODNOCENI POPULACE
 //=======================================================================
 inline void ohodnoceni(__m256i *vstup_komb, int minidx, int maxidx, int ignoreidx) {
-    // NOTE(Sigull): When timed this is more than 99%
+    // NOTE(Sigull): When timed this is more than 97% (rest is probably precompute_active)
     int total_vars = param_in + param_out;
 
     for (int i = minidx; i < maxidx; i++) {
@@ -305,10 +389,6 @@ void init_avx_data() {
     param_fitev = (blocks_32 + 7) / 8;
     
     if (param_fitev == 0) param_fitev = 1;
-
-    maxfitness = blocks_32 * 32 * param_out; 
-    fitnessepsilon = (int)(maxfitness * fitepsilon);
-    assert(maxfitness + maxblkfitness > 0); 
 
     tdata = (__m256i*)_mm_malloc(param_fitev * total_vars * sizeof(__m256i), 32);
     valid_masks = (__m256i*)_mm_malloc(param_fitev * sizeof(__m256i), 32);
@@ -372,7 +452,7 @@ int main(int argc, char* argv[])
     fitnessepsilon = (int)(maxfitness * fitepsilon);
     assert(maxfitness + maxblkfitness > 0); //Sanity check
 
-    srand(42); //inicializace pseudonahodneho generatoru
+    srand(41); //inicializace pseudonahodneho generatoru
     
     /**
     //Not cache local
@@ -380,13 +460,13 @@ int main(int argc, char* argv[])
         populace[i] = new chromozom [outputidx + param_out];
     */
 
-    // Doesn't help in the end.
+    // Doesn't help much in the end.
     // Cache local equivalent. Could fail if too big.
     // chromozom* populace_arena = nullptr;
     size_t n_jeden_chromozon = outputidx + param_out;
     try {
         int* raw_arena = new int[param_populace * n_jeden_chromozon];
-        populace_arena = (chromozom*)raw_arena; 
+        populace_arena = (chromozom*)raw_arena;
         for (int i = 0; i < param_populace; i++) {
             populace[i] = (chromozom*)(raw_arena + (n_jeden_chromozon * i));
         }
@@ -482,14 +562,23 @@ int main(int argc, char* argv[])
             }
             for (int j=outputidx; j < outputidx+param_out; j++)  //napojeni vystupu
                 *p_chrom++ = rand() % maxidx_out;
-
-            precompute_active(i);
         }
+
+        // If chrin (CHROMOZOME_LOAD) defined, put it into the first population.
+        // Will probably be chosen for the next.
+        chromozom temp_chrom = new int [outputidx + param_out];
+        if (load_chrom(chrin, sizeof(chrin), temp_chrom)) {
+            copy_chromozome(temp_chrom, populace[i]);
+            precompute_active(0);
+        } else {
+            printf("Error in CHROMOZOME_LOAD. Not matching params or malformed.\n");
+        }
+        delete[] temp_chrom;
 
         //-----------------------------------------------------------------------
         //Ohodnoceni pocatecni populace
         //-----------------------------------------------------------------------
-        bestfit = 0; bestfit_idx = -1;
+        bestfit = 0; bestfit_idx = -1, bestblk = ARRSIZE;
         ohodnoceni(tdata /*vektor ocekavanych dat*/, 0, param_populace, -1);
         for (int i=0; i < param_populace; i++) { //nalezeni nejlepsiho jedince
             if (fitt[i] > bestfit) {
@@ -546,7 +635,7 @@ int main(int argc, char* argv[])
                 
                 if (i == parentidx) continue; //preskocime rodice
 
-                if (fitt[i] == maxfitness) {
+                if (fitt[i] >= fitnessepsilon) {
                    //optimalizace na poc. bloku obvodu
 
                    blk = uzitobloku((chromozom) populace[i]);
@@ -591,6 +680,7 @@ int main(int argc, char* argv[])
         print_xls(xlsfil);
         fclose(xlsfil);
         printf("Best chromosome fitness: %d/%d\n",bestfit,maxfitness);
+        printf("Best chromosome blk: %d/%d\n",bestblk,ARRSIZE);
         printf("Best chromosome: ");
         print_chrom(stdout, (chromozom)populace[bestfit_idx]);
     
