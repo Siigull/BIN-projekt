@@ -306,14 +306,28 @@ inline int fitness(int pop_idx, const __m256i* __restrict p_svystup, __m256i val
         // NOTE(Sigull): Array function lookup table was also slower.
         if      (node.fce == 0) res = in1;
         else if (node.fce == 1) res = _mm256_and_si256(in1, in2);
+#if FUNCTIONS >= 3
         else if (node.fce == 2) res = _mm256_or_si256(in1, in2);
-        else if (node.fce == 3) res = _mm256_xor_si256(in1, in2);
+#endif
+#if FUNCTIONS >= 4
+        else res = _mm256_xor_si256(in1, in2);
+#endif
+#if FUNCTIONS >= 5
         else if (node.fce == 4) res = _mm256_andnot_si256(in1, ones); // NOT in1
+#endif
+#if FUNCTIONS >= 6
         else if (node.fce == 5) res = _mm256_andnot_si256(in2, ones); // NOT in2
+#endif
+#if FUNCTIONS >= 7
         else if (node.fce == 6) res = _mm256_and_si256(in1, _mm256_andnot_si256(in2, ones));
+#endif
+#if FUNCTIONS >= 8
         else if (node.fce == 7) res = _mm256_xor_si256(_mm256_and_si256(in1, in2), ones); // NAND
+#endif
+#if FUNCTIONS >= 9
         else if (node.fce == 8) res = _mm256_xor_si256(_mm256_or_si256(in1, in2), ones);  // NOR
-        else assert(false && "Should never get here.");
+#endif  
+        // else assert(false && "Should never get here.");
 
         v_vystupy[node.out_idx] = res;
     }
