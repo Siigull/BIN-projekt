@@ -4,3 +4,5 @@ Thinking about having a optimization which reshapes the graph during.
   Note 7x7 can be the same as 1x7. 
 
 Also try changing globals to const. Dont know what will compiler do.
+
+I can try to think about epsilon error in terms of distance for some circuits.
