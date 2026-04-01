@@ -367,6 +367,7 @@ inline void ohodnoceni(__m256i *vstup_komb, int minidx, int maxidx, int ignoreid
         for (int i = minidx; i < maxidx; i++) {
             if (i == ignoreidx) continue;
 
+            // if (fitt[i] + (param_fitev - l) * 256 * param_out < bestfit) continue; // Needs to be adjusted for blk
             fitt[i] += fitness(i, expected_outputs, current_mask);
         }
     }

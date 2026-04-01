@@ -5,7 +5,7 @@
 #define PARAM_N 10            //pocet radku
 #define L_BACK 7             //1 (pouze predchozi sloupec)  .. param_m (maximalni mozny rozsah);
 
-#define PARAM_GENERATIONS 100000  //max. pocet generaci evoluce
+#define PARAM_GENERATIONS 50000  //max. pocet generaci evoluce
 #define PARAM_RUNS 1            //max. pocet behu evoluce
 #define FUNCTIONS 4              //max. pocet pouzitych funkci bloku (viz fitness() )
 #define PERIODICLOGG  (PARAM_GENERATIONS/2) //po kolika krocich se ma vypsat populace
