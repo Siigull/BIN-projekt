@@ -5,7 +5,17 @@
 #include <string.h>
 #include <unistd.h>
 #include <assert.h>
-#include <immintrin.h>
+#if defined(__AVX2__)
+    #include <immintrin.h>
+    #define SIMD_WIDTH 8
+    #define SIMD_TYPE SIMD_TYPE
+#elif defined(__ARM_NEON) || defined(__aarch64__)
+    #include <arm_neon.h>
+    #define SIMD_WIDTH 4
+    #define SIMD_TYPE uint32x4_t
+#else
+    #error "No SIMD support"
+#endif
 #include <vector>
 #include <algorithm>
 #include "cgp.h"
@@ -39,12 +49,12 @@ char chrin = null;
 int param_fitev;  //pocet pruchodu pro ohodnoceni jednoho chromozomu, vznikne jako (pocet vstupnich dat/(pocet vstupu+pocet vystupu))
 
 int param_generaci; //pocet kroku evoluce
+int last_improvement = 0;
 int tdata_int[DATASIZE];
 
 #define CEIL_DIV(a, b) (((a) + (b) - 1) / (b))
-#define DATASIZE_256 CEIL_DIV(DATASIZE, 8)
-__m256i* tdata;
-__m256i* valid_masks;
+SIMD_TYPE* tdata;
+SIMD_TYPE* valid_masks;
 
 int sizesloupec = param_n*(block_in+1); //pocet polozek ktery zabira sloupec v chromozomu
 int outputidx   = param_m*sizesloupec; //index v poli chromozomu, kde zacinaji vystupy
@@ -54,7 +64,7 @@ int maxfitness  = 0; //max. hodnota fitness
 int fitpop, maxfitpop; //fitness populace
 
 //Rozšíření pro 
-double fitepsilon = 0.95; //Splňuje cíl operace v epsilon zlomku populace = uspech
+double fitepsilon = FIT_EPSILON; //Splňuje cíl operace v epsilon zlomku populace = uspech
 int fitnessepsilon = 0; //Nastaven v main(). Epsilon přepočítán na počet správných výsledků.
 int maxblkfitness = PARAM_M * PARAM_N; //max. hodnota fitness obsahu obvodu
 
@@ -215,27 +225,27 @@ int uzitobloku(chromozom p_chrom) {
     return poc;
 }
 
-inline int popcount_256_avx2(__m256i v) {
-    const __m256i lookup = _mm256_setr_epi8(
+inline int popcount_simd(SIMD_TYPE v) {
+#if defined(__AVX2__)
+    const SIMD_TYPE lookup = _mm256_setr_epi8(
         0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
         0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4
     );
-    const __m256i low_mask = _mm256_set1_epi8(0x0F);
-
-    __m256i lo = _mm256_and_si256(v, low_mask);
-    __m256i hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), low_mask);
-
-    __m256i popcnt1 = _mm256_shuffle_epi8(lookup, lo);
-    __m256i popcnt2 = _mm256_shuffle_epi8(lookup, hi);
-
-    __m256i total = _mm256_add_epi8(popcnt1, popcnt2);
-
+    const SIMD_TYPE low_mask = _mm256_set1_epi8(0x0F);
+    SIMD_TYPE lo = _mm256_and_si256(v, low_mask);
+    SIMD_TYPE hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), low_mask);
+    SIMD_TYPE popcnt1 = _mm256_shuffle_epi8(lookup, lo);
+    SIMD_TYPE popcnt2 = _mm256_shuffle_epi8(lookup, hi);
+    SIMD_TYPE total = _mm256_add_epi8(popcnt1, popcnt2);
     total = _mm256_sad_epu8(total, _mm256_setzero_si256());
-
     return _mm256_extract_epi64(total, 0) + 
            _mm256_extract_epi64(total, 1) + 
            _mm256_extract_epi64(total, 2) + 
            _mm256_extract_epi64(total, 3);
+#else  // NEON
+    uint8x16_t counts = vcntq_u8(vreinterpretq_u8_u32(v));
+    return vaddvq_u8(counts);
+#endif
 }
 
 struct ActiveChrom {
@@ -286,57 +296,85 @@ void precompute_active(int popul_index) {
     ac.active_count = (int)ac.nodes.size();
 }
 
-inline int fitness(int pop_idx, const __m256i* __restrict p_svystup, __m256i valid_mask) {
+inline int fitness(int pop_idx, const SIMD_TYPE* __restrict p_svystup, SIMD_TYPE valid_mask) {
     const ActiveChrom& ac = active_popul[pop_idx];
     int i, j;
-    // We assume 'vystupy' is now an array of __m256i
-    __m256i *v_vystupy = (__m256i*)vystupy;
-    __m256i *p_v_vystup = v_vystupy + param_in;
-
-    static const __m256i ones = _mm256_set1_epi32(-1);
-
+    SIMD_TYPE *v_vystupy = (SIMD_TYPE*)vystupy;
+    SIMD_TYPE *p_v_vystup = v_vystupy + param_in;
+    static const SIMD_TYPE ones = 
+#if defined(__AVX2__)
+        _mm256_set1_epi32(-1);
+#else
+        vdupq_n_u32((uint32_t)-1);
+#endif
+    
     for (const auto& node : ac.nodes) {
-        // Fetch inputs (Still 32-bit indices from chromosome)
-        __m256i in1 = v_vystupy[node.in1];
-        __m256i in2 = v_vystupy[node.in2];
-
-        __m256i res;
-
-        // NOTE(Sigull): Tried precomputing all values into an array -> was slower than ifs
-        // NOTE(Sigull): Array function lookup table was also slower.
+        SIMD_TYPE in1 = v_vystupy[node.in1];
+        SIMD_TYPE in2 = v_vystupy[node.in2];
+        SIMD_TYPE res;
+        
+#if defined(__AVX2__)
         if      (node.fce == 0) res = in1;
         else if (node.fce == 1) res = _mm256_and_si256(in1, in2);
 #if FUNCTIONS >= 3
         else if (node.fce == 2) res = _mm256_or_si256(in1, in2);
 #endif
 #if FUNCTIONS >= 4
-        else res = _mm256_xor_si256(in1, in2);
+        else if (node.fce == 3) res = _mm256_xor_si256(in1, in2);
 #endif
 #if FUNCTIONS >= 5
-        else if (node.fce == 4) res = _mm256_andnot_si256(in1, ones); // NOT in1
+        else if (node.fce == 4) res = _mm256_andnot_si256(in1, ones);
 #endif
 #if FUNCTIONS >= 6
-        else if (node.fce == 5) res = _mm256_andnot_si256(in2, ones); // NOT in2
+        else if (node.fce == 5) res = _mm256_andnot_si256(in2, ones);
 #endif
 #if FUNCTIONS >= 7
         else if (node.fce == 6) res = _mm256_and_si256(in1, _mm256_andnot_si256(in2, ones));
 #endif
 #if FUNCTIONS >= 8
-        else if (node.fce == 7) res = _mm256_xor_si256(_mm256_and_si256(in1, in2), ones); // NAND
+        else if (node.fce == 7) res = _mm256_xor_si256(_mm256_and_si256(in1, in2), ones);
 #endif
 #if FUNCTIONS >= 9
-        else if (node.fce == 8) res = _mm256_xor_si256(_mm256_or_si256(in1, in2), ones);  // NOR
-#endif  
-        // else assert(false && "Should never get here.");
-
+        else if (node.fce == 8) res = _mm256_xor_si256(_mm256_or_si256(in1, in2), ones);
+#endif
+#else  // NEON
+        if      (node.fce == 0) res = in1;
+        else if (node.fce == 1) res = vandq_u32(in1, in2);
+#if FUNCTIONS >= 3
+        else if (node.fce == 2) res = vorrq_u32(in1, in2);
+#endif
+#if FUNCTIONS >= 4
+        else if (node.fce == 3) res = veorq_u32(in1, in2);
+#endif
+#if FUNCTIONS >= 5
+        else if (node.fce == 4) res = vbicq_u32(ones, in1);
+#endif
+#if FUNCTIONS >= 6
+        else if (node.fce == 5) res = vbicq_u32(ones, in2);
+#endif
+#if FUNCTIONS >= 7
+        else if (node.fce == 6) res = vandq_u32(in1, vbicq_u32(ones, in2));
+#endif
+#if FUNCTIONS >= 8
+        else if (node.fce == 7) res = veorq_u32(vandq_u32(in1, in2), ones);
+#endif
+#if FUNCTIONS >= 9
+        else if (node.fce == 8) res = veorq_u32(vorrq_u32(in1, in2), ones);
+#endif
+#endif
         v_vystupy[node.out_idx] = res;
     }
-
+    
     int total_correct = 0;
     for (i = 0; i < param_out; i++) {
-        __m256i matched = _mm256_xor_si256(_mm256_xor_si256(v_vystupy[ac.out_indices[i]], p_svystup[i]), ones);
+#if defined(__AVX2__)
+        SIMD_TYPE matched = _mm256_xor_si256(_mm256_xor_si256(v_vystupy[ac.out_indices[i]], p_svystup[i]), ones);
         matched = _mm256_and_si256(matched, valid_mask);
-        total_correct += popcount_256_avx2(matched);
+#else
+        SIMD_TYPE matched = veorq_u32(veorq_u32(v_vystupy[ac.out_indices[i]], p_svystup[i]), ones);
+        matched = vandq_u32(matched, valid_mask);
+#endif
+        total_correct += popcount_simd(matched);
     }
     
     return total_correct;
@@ -345,7 +383,7 @@ inline int fitness(int pop_idx, const __m256i* __restrict p_svystup, __m256i val
 //-----------------------------------------------------------------------
 //OHODNOCENI POPULACE
 //=======================================================================
-inline void ohodnoceni(__m256i *vstup_komb, int minidx, int maxidx, int ignoreidx) {
+inline void ohodnoceni(SIMD_TYPE *vstup_komb, int minidx, int maxidx, int ignoreidx) {
     // NOTE(Sigull): When timed this is more than 97% (rest is probably precompute_active)
     int total_vars = param_in + param_out;
 
@@ -354,20 +392,23 @@ inline void ohodnoceni(__m256i *vstup_komb, int minidx, int maxidx, int ignoreid
     }
 
     for (int l = 0; l < param_fitev; l++) {
-        // Pointer to the batch of 256 test cases
-        __m256i* batch_ptr = vstup_komb + (l * total_vars);
+        // Pointer to the batch of SIMD_WIDTH * 32 test cases
+        SIMD_TYPE* batch_ptr = vstup_komb + (l * total_vars);
         
         // Copy just the inputs to our 'vystupy' workbench
-        memcpy(vystupy, batch_ptr, param_in * sizeof(__m256i));
+        memcpy(vystupy, batch_ptr, param_in * sizeof(SIMD_TYPE));
         
         // Grab the pre-calculated mask and outputs for this batch
-        __m256i current_mask = valid_masks[l];
-        __m256i* expected_outputs = batch_ptr + param_in;
+        SIMD_TYPE current_mask = valid_masks[l];
+        SIMD_TYPE* expected_outputs = batch_ptr + param_in;
 
         for (int i = minidx; i < maxidx; i++) {
             if (i == ignoreidx) continue;
 
-            // if (fitt[i] + (param_fitev - l) * 256 * param_out < bestfit) continue; // Needs to be adjusted for blk
+            // if (fitt[i] + (param_fitev - l) * (SIMD_WIDTH * 32) * param_out < bestfit) continue; // Needs to be adjusted for blk
+            if (active_popul[i].active_count > bestblk) continue;
+            if (!(active_popul[i].active_count < bestblk) &&
+                  (fitt[i] + (param_fitev - l) * (SIMD_WIDTH * 32) * param_out < bestfit)) continue;
             fitt[i] += fitness(i, expected_outputs, current_mask);
         }
     }
@@ -399,38 +440,85 @@ inline void mutace(chromozom p_chrom) {
 
 void init_avx_data() {
     int total_vars = param_in + param_out;
+    int blocks_32 = DATASIZE / total_vars;
+    param_fitev = (blocks_32 + SIMD_WIDTH - 1) / SIMD_WIDTH;
     
-    int blocks_32 = DATASIZE / total_vars; 
-    param_fitev = (blocks_32 + 7) / 8;
+#if defined(__AVX2__)
+    tdata = (SIMD_TYPE*)_mm_malloc(param_fitev * total_vars * sizeof(SIMD_TYPE), 32);
+    valid_masks = (SIMD_TYPE*)_mm_malloc(param_fitev * sizeof(SIMD_TYPE), 32);
+#else
+    tdata = (SIMD_TYPE*)aligned_alloc(32, param_fitev * total_vars * sizeof(SIMD_TYPE));
+    valid_masks = (SIMD_TYPE*)aligned_alloc(32, param_fitev * sizeof(SIMD_TYPE));
+#endif
     
-    if (param_fitev == 0) param_fitev = 1;
-
-    tdata = (__m256i*)_mm_malloc(param_fitev * total_vars * sizeof(__m256i), 32);
-    valid_masks = (__m256i*)_mm_malloc(param_fitev * sizeof(__m256i), 32);
-    
-    memset(tdata, 0, param_fitev * total_vars * sizeof(__m256i));
-
+    memset(tdata, 0, param_fitev * total_vars * sizeof(SIMD_TYPE));
     int* tdata_as_int = (int*)tdata;
     for (int b = 0; b < blocks_32; b++) {
-        int avx_block = b / 8;
-        int lane = b % 8;
+        int avx_block = b / SIMD_WIDTH;
+        int lane = b % SIMD_WIDTH;
         for (int v = 0; v < total_vars; v++) {
-            int dest_idx = (avx_block * total_vars * 8) + (v * 8) + lane;
+            int dest_idx = (avx_block * total_vars * SIMD_WIDTH) + (v * SIMD_WIDTH) + lane;
             int src_idx = (b * total_vars) + v;
             tdata_as_int[dest_idx] = tdata_int[src_idx];
         }
     }
-
-    // 4. Pre-calculate the padding masks for every batch
-    int leftover_blocks = blocks_32 % 8;
+    
+    int leftover_blocks = blocks_32 % SIMD_WIDTH;
     for (int l = 0; l < param_fitev; l++) {
         if (l == param_fitev - 1 && leftover_blocks != 0) {
-            memset(&valid_masks[l], 0, sizeof(__m256i));
+            memset(&valid_masks[l], 0, sizeof(SIMD_TYPE));
             memset(&valid_masks[l], 0xFF, leftover_blocks * sizeof(int));
         } else {
+#if defined(__AVX2__)
             valid_masks[l] = _mm256_set1_epi32(-1);
+#else
+            valid_masks[l] = vdupq_n_u32((uint32_t)-1);
+#endif
         }
     }
+}
+
+void shuffle_subarray(int* arr, int start, int end) {
+    for (int i = end; i > start; i--) {
+        int j = start + rand() % (i - start + 1);
+
+        int temp = arr[i];
+        arr[i] = arr[j];
+        arr[j] = temp;
+    }
+}
+
+void vertical_shuffle(int popi) {
+    chromozom p_chrom = (chromozom)populace[popi];
+
+    int map[ARRSIZE + PARAM_IN];
+    int inv_map[ARRSIZE + PARAM_IN];
+    for (int i=0; i < ARRSIZE + param_in; i++) {
+        map[i] = i;
+        inv_map[i] = i;
+    }
+
+    for (int i=param_in; i < ARRSIZE + param_in; i+=param_n) {
+        shuffle_subarray(inv_map, i, i+param_n-1);
+    }
+    for (int i=param_in; i < param_in + ARRSIZE; i++) {
+        map[inv_map[i]] = i;
+    }
+
+    chromozom temp_chrom = new int [outputidx + param_out];
+    copy_chromozome(p_chrom, temp_chrom);
+    for (int i=0; i < ARRSIZE; i++) {
+        int* gen_in = temp_chrom + i*3;
+        int* gen_out = p_chrom + (map[i+param_in] - param_in)*3;
+        memcpy(gen_out, gen_in, sizeof(int)*3);
+        gen_out[0] = map[gen_out[0]];
+        gen_out[1] = map[gen_out[1]];
+    }
+
+    for (int i=0; i < param_out; i++) {
+        *(p_chrom + outputidx + i) = map[*(p_chrom + outputidx + i)];
+    }
+    delete[] temp_chrom;
 }
 
 //-----------------------------------------------------------------------
@@ -453,7 +541,12 @@ int main(int argc, char* argv[])
     if ((argc == 2) && (argv[1] != "")) 
        logfname = string(argv[1]);
     
-    vystupy = (int*)_mm_malloc((maxidx_out + param_out) * sizeof(__m256i), 32);
+    vystupy = (int*)
+#if defined(__AVX2__)
+    _mm_malloc((maxidx_out + param_out) * sizeof(SIMD_TYPE), 32);
+#else
+    aligned_alloc(32, (maxidx_out + param_out) * sizeof(SIMD_TYPE));
+#endif
     pouzite = new int [maxidx_out];
 
     init_data(tdata_int);
@@ -461,7 +554,7 @@ int main(int argc, char* argv[])
 
     int total_vars = param_in + param_out;
     int blocks_32 = DATASIZE / total_vars; // Exactly how many 32-bit blocks we have (e.g. 5)
-    param_fitev = CEIL_DIV(blocks_32, 8);  // How many 256-bit batches we need
+    param_fitev = CEIL_DIV(blocks_32, SIMD_WIDTH);
 
     maxfitness = blocks_32 * 32 * param_out; 
     fitnessepsilon = (int)(maxfitness * fitepsilon);
@@ -541,7 +634,7 @@ int main(int argc, char* argv[])
         t = time(NULL);
         tl = localtime(&t);
     
-        sprintf(fn, "_%d", run);
+        snprintf(fn, sizeof(fn)-1, "_%d", run);
         logfname2 = logfname + string(fn);
         strcpy(fn, logfname2.c_str()); strcat(fn,".xls");
         xlsfil = fopen(fn,"wb");
@@ -583,7 +676,7 @@ int main(int argc, char* argv[])
         // Will probably be chosen for the next.
         chromozom temp_chrom = new int [outputidx + param_out];
         if (load_chrom(chrin, sizeof(chrin), temp_chrom)) {
-            copy_chromozome(temp_chrom, populace[i]);
+            copy_chromozome(temp_chrom, populace[0]);
             precompute_active(0);
         } else {
             printf("Error in CHROMOZOME_LOAD. Not matching params or malformed.\n");
@@ -593,7 +686,7 @@ int main(int argc, char* argv[])
         //-----------------------------------------------------------------------
         //Ohodnoceni pocatecni populace
         //-----------------------------------------------------------------------
-        bestfit = 0; bestfit_idx = -1, bestblk = ARRSIZE;
+        bestfit = 0; bestfit_idx = -1, bestblk = ARRSIZE, last_improvement = 0;
         ohodnoceni(tdata /*vektor ocekavanych dat*/, 0, param_populace, -1);
         for (int i=0; i < param_populace; i++) { //nalezeni nejlepsiho jedince
             if (fitt[i] > bestfit) {
@@ -638,6 +731,15 @@ int main(int argc, char* argv[])
                 precompute_active(i);
             }
 
+            if (param_generaci - last_improvement >= N_SHUFFLE) {
+                printf("Generation:%d   vertical shuffled\n", param_generaci);
+                last_improvement = param_generaci;
+                for (int i=0; i < POPULACE_MAX; i++) {
+                    vertical_shuffle(i);
+                    precompute_active(i);
+                }
+            }
+
             //-----------------------------------------------------------------------
             //ohodnoceni populace
             //-----------------------------------------------------------------------
@@ -653,18 +755,21 @@ int main(int argc, char* argv[])
                 if (fitt[i] >= fitnessepsilon) {
                    //optimalizace na poc. bloku obvodu
 
-                   blk = uzitobloku((chromozom) populace[i]);
-                   if (blk <= bestblk) {
+                    blk = uzitobloku((chromozom) populace[i]);
+                    if (blk <= bestblk) {
 
-                      if (blk < bestblk) {
-                         printf("Generation:%d\t\tbestblk b:%d\n",param_generaci,blk);
-                         log = true;
-                      }
-
-                      bestfit_idx = i;
-                      bestfit = fitt[i];
-                      bestblk = blk;
-                   }
+                        if (blk < bestblk) {
+                            printf("Generation:%d\t\tbestblk b:%d\n",param_generaci,blk);
+                            log = true;
+                            last_improvement = param_generaci;
+                        }
+                        
+                        if (blk < bestblk || bestfit <= fitt[i]) {
+                            bestfit_idx = i;
+                            bestfit = fitt[i];
+                            bestblk = blk;
+                        }
+                    }
                 } else if (fitt[i] >= bestfit) {
                    //nalezen lepsi nebo stejne dobry jedinec jako byl jeho rodic
 

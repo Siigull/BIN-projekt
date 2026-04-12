@@ -1,7 +1,7 @@
 all:	cgp
 
 cgp:	cgp.cpp cgp.h data/*.h
-		g++ cgp.cpp -O3 -mavx2 -o cgp
+		clang++ cgp.cpp -std=c++20 -O3 -fsanitize=address -mcpu=apple-m1 -o cgp
 
 old:    cgpold.cpp cgp.h data/*.h
 		g++ cgpold.cpp -O3 -mavx2 -o cgpold
