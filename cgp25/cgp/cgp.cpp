@@ -521,6 +521,36 @@ void vertical_shuffle(int popi) {
     delete[] temp_chrom;
 }
 
+float population_diversity() {
+    const ActiveChrom& best_ac = active_popul[bestfit_idx];
+    if (best_ac.active_count == 0) return 1.0f;
+
+    chromozom best = (chromozom)populace[bestfit_idx];
+    int diff = 0;
+    // 3 genes per active node + param_out output wires
+    int genes_per_cmp = best_ac.active_count * 3 + param_out;
+
+    for (int i = 0; i < param_populace; i++) {
+        if (i == bestfit_idx) continue;
+        chromozom other = (chromozom)populace[i];
+
+        for (const auto& node : best_ac.nodes) {
+            int g = (node.out_idx - param_in) * 3;
+            diff += (best[g]     != other[g]);     // in1
+            diff += (best[g + 1] != other[g + 1]); // in2
+            diff += (best[g + 2] != other[g + 2]); // fce
+        }
+
+        for (int j = 0; j < param_out; j++)
+            diff += (best[outputidx + j] != other[outputidx + j]);
+    }
+
+    float diver = diff / (float)(genes_per_cmp * (param_populace - 1));
+    printf("diversity: %f\n", diver);
+
+    return diver;
+}
+
 //-----------------------------------------------------------------------
 // MAIN
 //-----------------------------------------------------------------------
@@ -731,12 +761,15 @@ int main(int argc, char* argv[])
                 precompute_active(i);
             }
 
-            if (param_generaci - last_improvement >= N_SHUFFLE) {
-                printf("Generation:%d   vertical shuffled\n", param_generaci);
-                last_improvement = param_generaci;
-                for (int i=0; i < POPULACE_MAX; i++) {
-                    vertical_shuffle(i);
-                    precompute_active(i);
+            if ((param_generaci % 1000) == 0) {
+                bool stagnated = (population_diversity() < 0.005f);
+                if (stagnated) {
+                    printf("Generation:%d   vertical shuffled\n", param_generaci);
+                    last_improvement = param_generaci;
+                    for (int i=0; i < POPULACE_MAX; i++) {
+                        vertical_shuffle(i);
+                        precompute_active(i);
+                    }
                 }
             }
 
