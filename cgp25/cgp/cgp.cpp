@@ -257,6 +257,26 @@ struct ActiveChrom {
 
 ActiveChrom active_popul[POPULACE_MAX];
 
+void log_active_nodes_by_column(FILE* fout, int pop_idx) {
+    const ActiveChrom& ac = active_popul[pop_idx];
+    std::vector<int> col_counts(param_m, 0);
+
+    for (const auto& node : ac.nodes) {
+        int flat_idx = node.out_idx - param_in;
+        if (flat_idx < 0) continue;
+        int col = flat_idx / param_n;
+        if (col >= 0 && col < param_m) {
+            col_counts[col]++;
+        }
+    }
+
+    fprintf(fout, "Active nodes by column:");
+    for (int c = 0; c < param_m; c++) {
+        fprintf(fout, "%d, ", c);
+    }
+    fprintf(fout, "\n");
+}
+
 void precompute_active(int popul_index) {
     ActiveChrom& ac = active_popul[popul_index];
     chromozom p_chrom = (chromozom)populace[popul_index];
@@ -521,6 +541,84 @@ void vertical_shuffle(int popi) {
     delete[] temp_chrom;
 }
 
+void horizontal_migrate(int popi) {
+    chromozom p_chrom = (chromozom)populace[popi];
+    const ActiveChrom& ac = active_popul[popi];
+
+    // Build active set for quick lookup
+    bool is_active[ARRSIZE + PARAM_IN] = {};
+    for (const auto& node : ac.nodes)
+        is_active[node.out_idx] = true;
+
+    for (const auto& node : ac.nodes) {
+        int out_a  = node.out_idx;
+        int flat_a = out_a - param_in;        // flat index of node A
+        int col_a  = flat_a / param_n;
+
+        if (col_a == 0) continue;             // nothing left to migrate into
+        int col_b = col_a - 1;
+
+        // Check A's inputs are reachable from col_b
+        int min_reach = param_in + std::max(0, col_b - l_back) * param_n;
+        int max_reach = param_in + col_b * param_n;  // exclusive
+
+        auto reachable = [&](int in) {
+            return in < param_in || (in >= min_reach && in < max_reach);
+        };
+        if (!reachable(node.in1) || !reachable(node.in2)) continue;
+
+        // Find an inactive slot at col_b to swap with
+        int flat_b = -1;
+        for (int r = 0; r < param_n; r++) {
+            int candidate = param_in + col_b * param_n + r;
+            if (!is_active[candidate]) {
+                flat_b = col_b * param_n + r;
+                break;
+            }
+        }
+        if (flat_b == -1) continue;           // no inactive slot in col_b
+
+        int out_b = param_in + flat_b;
+
+        // Check no downstream node referencing out_a would violate l_back
+        // after A moves to col_b. Fails only when referencer is at col_a + l_back exactly.
+        bool safe = true;
+        for (int i = 0; i < outputidx; i += 3) {
+            if (p_chrom[i] == out_a || p_chrom[i+1] == out_a) {
+                int ref_col = (i / 3) / param_n;
+                if (ref_col - col_b > l_back) { safe = false; break; }
+            }
+        }
+        if (!safe) continue;
+
+        // Swap the two gene triples
+        int* gene_a = p_chrom + flat_a * 3;
+        int* gene_b = p_chrom + flat_b * 3;
+        int tmp[3];
+        memcpy(tmp,    gene_a, 3 * sizeof(int));
+        memcpy(gene_a, gene_b, 3 * sizeof(int));
+        memcpy(gene_b, tmp,    3 * sizeof(int));
+
+        // Remap all references out_a <-> out_b throughout the chromosome.
+        // Gene inputs of the swapped nodes themselves won't be touched:
+        // both in1/in2 of either node are < min(out_a, out_b) by construction.
+        for (int i = 0; i < outputidx; i += 3) {
+            for (int k = 0; k < 2; k++) {
+                if      (p_chrom[i+k] == out_a) p_chrom[i+k] = out_b;
+                else if (p_chrom[i+k] == out_b) p_chrom[i+k] = out_a;
+            }
+        }
+        for (int i = 0; i < param_out; i++) {
+            int& o = p_chrom[outputidx + i];
+            if      (o == out_a) o = out_b;
+            else if (o == out_b) o = out_a;
+        }
+
+        // One migration per call — caller loops over population
+        break;
+    }
+}
+
 //-----------------------------------------------------------------------
 // MAIN
 //-----------------------------------------------------------------------
@@ -560,8 +658,10 @@ int main(int argc, char* argv[])
     fitnessepsilon = (int)(maxfitness * fitepsilon);
     assert(maxfitness + maxblkfitness > 0); //Sanity check
 
-    srand(41); //inicializace pseudonahodneho generatoru
-    
+    int seed = 40;
+    srand(seed); //inicializace pseudonahodneho generatoru
+    printf("Seed of run/s is %d\n", seed);
+
     /**
     //Not cache local
     for (int i=0; i < param_populace; i++) //alokace pameti pro chromozomy populace
@@ -732,10 +832,11 @@ int main(int argc, char* argv[])
             }
 
             if (param_generaci - last_improvement >= N_SHUFFLE) {
-                printf("Generation:%d   vertical shuffled\n", param_generaci);
+                printf("Generation:%d shuffled\n", param_generaci);
                 last_improvement = param_generaci;
                 for (int i=0; i < POPULACE_MAX; i++) {
                     vertical_shuffle(i);
+                    horizontal_migrate(i);
                     precompute_active(i);
                 }
             }
@@ -768,6 +869,7 @@ int main(int argc, char* argv[])
                             bestfit_idx = i;
                             bestfit = fitt[i];
                             bestblk = blk;
+                            log_active_nodes_by_column(stdout, bestfit_idx);
                         }
                     }
                 } else if (fitt[i] >= bestfit) {
@@ -781,6 +883,7 @@ int main(int argc, char* argv[])
                    bestfit_idx = i;
                    bestfit = fitt[i];
                    bestblk = ARRSIZE;
+                   log_active_nodes_by_column(stdout, bestfit_idx);
                 }
             }
     
@@ -801,6 +904,7 @@ int main(int argc, char* argv[])
         fclose(xlsfil);
         printf("Best chromosome fitness: %d/%d\n",bestfit,maxfitness);
         printf("Best chromosome blk: %d/%d\n",bestblk,ARRSIZE);
+        log_active_nodes_by_column(stdout, bestfit_idx);
         printf("Best chromosome: ");
         print_chrom(stdout, (chromozom)populace[bestfit_idx]);
     
