@@ -1,14 +1,17 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#include <stdint.h>
 #include <string>
 #include <string.h>
 #include <unistd.h>
 #include <assert.h>
+#include <ctype.h>
+#include <new>
 #if defined(__AVX2__)
     #include <immintrin.h>
     #define SIMD_WIDTH 8
-    #define SIMD_TYPE SIMD_TYPE
+    #define SIMD_TYPE __m256i
 #elif defined(__ARM_NEON) || defined(__aarch64__)
     #include <arm_neon.h>
     #define SIMD_WIDTH 4
@@ -18,7 +21,16 @@
 #endif
 #include <vector>
 #include <algorithm>
-#include "cgp.h"
+#include <cstdlib>
+#include "../cgp.h"
+#include "SharedDefinitions.h"
+
+#if defined(__APPLE__) && defined(USE_METAL)
+#include "metal_eval_bridge.h"
+#define GPU_METAL_ENABLED 1
+#else
+#define GPU_METAL_ENABLED 0
+#endif
 
 typedef int *chromozom;              //dynamicke pole int, velikost dana m*n*(vstupu bloku+vystupu bloku) + vystupu komb
 chromozom *populace[POPULACE_MAX];   //pole ukazatelu na chromozomy jedincu populace
@@ -42,7 +54,7 @@ int l_back = L_BACK;              // 1 (pouze predchozi sloupec)  .. param_m (ma
 #ifdef CHROMOZOME_LOAD
 char chrin[] = CHROMOZOME_LOAD;
 #else
-char chrin = null;
+char chrin[] = "";
 #endif
 
 
@@ -257,6 +269,54 @@ struct ActiveChrom {
 
 ActiveChrom active_popul[POPULACE_MAX];
 
+bool g_check_correctness = false;
+bool g_correctness_checked_once = false;
+
+#if GPU_METAL_ENABLED
+MetalEvalContext* g_metal_ctx = nullptr;
+bool g_metal_ready = false;
+std::vector<uint32_t> g_tdata_blocks;
+std::vector<uint32_t> g_valid_masks_blocks;
+std::vector<MetalChromosome> g_metal_population;
+std::vector<uint32_t> g_metal_fitness;
+int g_data_blocks_32 = 0;
+
+bool pack_population_for_metal(char* err, size_t err_size) {
+    g_metal_population.assign(param_populace, MetalChromosome{});
+
+    if (param_out > METAL_MAX_OUTPUTS) {
+        snprintf(err, err_size, "PARAM_OUT=%d exceeds METAL_MAX_OUTPUTS=%d", param_out, METAL_MAX_OUTPUTS);
+        return false;
+    }
+    if (maxidx_out > METAL_MAX_VYSTUPY) {
+        snprintf(err, err_size, "maxidx_out=%d exceeds METAL_MAX_VYSTUPY=%d", maxidx_out, METAL_MAX_VYSTUPY);
+        return false;
+    }
+
+    for (int i = 0; i < param_populace; i++) {
+        const ActiveChrom& ac = active_popul[i];
+        if (ac.active_count > METAL_MAX_ACTIVE_NODES) {
+            snprintf(err, err_size, "active_count=%d exceeds METAL_MAX_ACTIVE_NODES=%d", ac.active_count, METAL_MAX_ACTIVE_NODES);
+            return false;
+        }
+
+        MetalChromosome& mc = g_metal_population[i];
+        mc.active_count = (uint)ac.active_count;
+        for (int o = 0; o < param_out; o++) {
+            mc.out_indices[o] = (uint)ac.out_indices[o];
+        }
+        for (int n = 0; n < ac.active_count; n++) {
+            mc.nodes[n].in1 = (uint)ac.nodes[n].in1;
+            mc.nodes[n].in2 = (uint)ac.nodes[n].in2;
+            mc.nodes[n].fce = (uint)ac.nodes[n].fce;
+            mc.nodes[n].out_idx = (uint)ac.nodes[n].out_idx;
+        }
+    }
+
+    return true;
+}
+#endif
+
 void log_active_nodes_by_column(FILE* fout, int pop_idx) {
     const ActiveChrom& ac = active_popul[pop_idx];
     std::vector<int> col_counts(param_m, 0);
@@ -400,38 +460,94 @@ inline int fitness(int pop_idx, const SIMD_TYPE* __restrict p_svystup, SIMD_TYPE
     return total_correct;
 }
 
-//-----------------------------------------------------------------------
-//OHODNOCENI POPULACE
-//=======================================================================
-inline void ohodnoceni(SIMD_TYPE *vstup_komb, int minidx, int maxidx, int ignoreidx) {
-    // NOTE(Sigull): When timed this is more than 97% (rest is probably precompute_active)
+inline void ohodnoceni_cpu_impl(SIMD_TYPE *vstup_komb, int minidx, int maxidx, int ignoreidx, int* out_fitt) {
     int total_vars = param_in + param_out;
 
     for (int i = minidx; i < maxidx; i++) {
-        if (i != ignoreidx) fitt[i] = 0;
+        if (i != ignoreidx) out_fitt[i] = 0;
     }
 
     for (int l = 0; l < param_fitev; l++) {
-        // Pointer to the batch of SIMD_WIDTH * 32 test cases
         SIMD_TYPE* batch_ptr = vstup_komb + (l * total_vars);
-        
-        // Copy just the inputs to our 'vystupy' workbench
         memcpy(vystupy, batch_ptr, param_in * sizeof(SIMD_TYPE));
-        
-        // Grab the pre-calculated mask and outputs for this batch
+
         SIMD_TYPE current_mask = valid_masks[l];
         SIMD_TYPE* expected_outputs = batch_ptr + param_in;
 
         for (int i = minidx; i < maxidx; i++) {
             if (i == ignoreidx) continue;
-
-            // if (fitt[i] + (param_fitev - l) * (SIMD_WIDTH * 32) * param_out < bestfit) continue; // Needs to be adjusted for blk
             if (active_popul[i].active_count > bestblk) continue;
             if (!(active_popul[i].active_count < bestblk) &&
-                  (fitt[i] + (param_fitev - l) * (SIMD_WIDTH * 32) * param_out < bestfit)) continue;
-            fitt[i] += fitness(i, expected_outputs, current_mask);
+                  (out_fitt[i] + (param_fitev - l) * (SIMD_WIDTH * 32) * param_out < bestfit)) continue;
+            out_fitt[i] += fitness(i, expected_outputs, current_mask);
         }
     }
+}
+
+//-----------------------------------------------------------------------
+//OHODNOCENI POPULACE
+//=======================================================================
+inline void ohodnoceni(SIMD_TYPE *vstup_komb, int minidx, int maxidx, int ignoreidx) {
+#if GPU_METAL_ENABLED
+    if (g_metal_ready && minidx == 0 && maxidx == param_populace) {
+        char err[512] = {0};
+        if (pack_population_for_metal(err, sizeof(err))) {
+            g_metal_fitness.assign(param_populace, 0);
+            bool ok = metal_eval_evaluate(
+                g_metal_ctx,
+                g_metal_population.data(),
+                (uint32_t)param_populace,
+                g_tdata_blocks.data(),
+                g_valid_masks_blocks.data(),
+                (uint32_t)param_in,
+                (uint32_t)param_out,
+                (uint32_t)g_data_blocks_32,
+                g_metal_fitness.data(),
+                err,
+                sizeof(err)
+            );
+
+            if (ok) {
+                for (int i = minidx; i < maxidx; i++) {
+                    if (i == ignoreidx) continue;
+                    fitt[i] = (int)g_metal_fitness[i];
+                }
+
+                if (g_check_correctness && !g_correctness_checked_once) {
+                    std::vector<int> cpu_ref(param_populace, 0);
+                    ohodnoceni_cpu_impl(vstup_komb, minidx, maxidx, ignoreidx, cpu_ref.data());
+
+                    int mismatch_count = 0;
+                    for (int i = minidx; i < maxidx; i++) {
+                        if (i == ignoreidx) continue;
+                        if (fitt[i] != cpu_ref[i]) {
+                            if (mismatch_count < 5) {
+                                printf("Correctness mismatch idx=%d gpu=%d cpu=%d\n", i, fitt[i], cpu_ref[i]);
+                            }
+                            mismatch_count++;
+                        }
+                    }
+                    if (mismatch_count == 0) {
+                        printf("Correctness check passed: GPU and CPU fitness match.\n");
+                    } else {
+                        printf("Correctness check FAILED: %d mismatches.\n", mismatch_count);
+                    }
+                    g_correctness_checked_once = true;
+                }
+                return;
+            }
+        }
+
+        g_metal_ready = false;
+        if (err[0] != '\0') {
+            printf("Metal fallback to CPU: %s\n", err);
+        } else {
+            printf("Metal fallback to CPU: unknown failure\n");
+        }
+    }
+#endif
+
+    ohodnoceni_cpu_impl(vstup_komb, minidx, maxidx, ignoreidx, fitt);
 }
 
 //-----------------------------------------------------------------------
@@ -462,6 +578,16 @@ void init_avx_data() {
     int total_vars = param_in + param_out;
     int blocks_32 = DATASIZE / total_vars;
     param_fitev = (blocks_32 + SIMD_WIDTH - 1) / SIMD_WIDTH;
+#if GPU_METAL_ENABLED
+    g_data_blocks_32 = blocks_32;
+    g_tdata_blocks.assign((size_t)blocks_32 * (size_t)total_vars, 0);
+    g_valid_masks_blocks.assign((size_t)blocks_32, 0xFFFFFFFFu);
+    for (int b = 0; b < blocks_32; b++) {
+        for (int v = 0; v < total_vars; v++) {
+            g_tdata_blocks[(size_t)b * (size_t)total_vars + (size_t)v] = (uint32_t)tdata_int[b * total_vars + v];
+        }
+    }
+#endif
     
 #if defined(__AVX2__)
     tdata = (SIMD_TYPE*)_mm_malloc(param_fitev * total_vars * sizeof(SIMD_TYPE), 32);
@@ -626,6 +752,12 @@ int main(int argc, char* argv[])
 {
     using namespace std;
 
+    const char* check_env = getenv("CGP_CHECK_CORRECTNESS");
+    g_check_correctness = (check_env && check_env[0] != '\0' && check_env[0] != '0');
+    if (g_check_correctness) {
+        printf("Correctness mode enabled (GPU vs CPU evaluator compare).\n");
+    }
+
     FILE *xlsfil, *colcount;
     string logfname, logfname2;
     int rnd, fitn, blk;
@@ -636,7 +768,7 @@ int main(int argc, char* argv[])
     int parentidx;
     
     logfname = "log";
-    if ((argc == 2) && (argv[1] != "")) 
+    if ((argc == 2) && (argv[1][0] != '\0')) 
        logfname = string(argv[1]);
     
     vystupy = (int*)
@@ -650,6 +782,28 @@ int main(int argc, char* argv[])
     init_data(tdata_int);
     init_avx_data();
 
+#if GPU_METAL_ENABLED
+    {
+        char err[512] = {0};
+        const char* shader_candidates[] = {
+            "cgp_exp/cgp_eval.metal",
+            "./cgp_eval.metal",
+            nullptr
+        };
+        for (int s = 0; shader_candidates[s] != nullptr; s++) {
+            g_metal_ctx = metal_eval_create(shader_candidates[s], err, sizeof(err));
+            if (g_metal_ctx) {
+                g_metal_ready = true;
+                printf("Metal evaluator enabled with shader: %s\n", shader_candidates[s]);
+                break;
+            }
+        }
+        if (!g_metal_ready) {
+            printf("Metal evaluator unavailable, using CPU path: %s\n", err[0] ? err : "unknown error");
+        }
+    }
+#endif
+
     int total_vars = param_in + param_out;
     int blocks_32 = DATASIZE / total_vars; // Exactly how many 32-bit blocks we have (e.g. 5)
     param_fitev = CEIL_DIV(blocks_32, SIMD_WIDTH);
@@ -658,7 +812,7 @@ int main(int argc, char* argv[])
     fitnessepsilon = (int)(maxfitness * fitepsilon);
     assert(maxfitness + maxblkfitness > 0); //Sanity check
 
-    int seed = (unsigned) time(NULL);
+    int seed = 40;
     srand(seed); //inicializace pseudonahodneho generatoru
     printf("Seed of run/s is %d\n", seed);
 
@@ -948,5 +1102,12 @@ int main(int argc, char* argv[])
         for (int i = param_populace - 1; i >= 0; i--)
             delete[] populace[i];
     }
+
+#if GPU_METAL_ENABLED
+    if (g_metal_ctx) {
+        metal_eval_destroy(g_metal_ctx);
+        g_metal_ctx = nullptr;
+    }
+#endif
     return 0;
 }

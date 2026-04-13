@@ -1,0 +1,10 @@
+Seed: 40
+1: Active nodes by column:8, 10, 6, 5, 3, 4, 4, 3, 2, 1, 
+2: Active nodes by column:8, 10, 6, 5, 3, 4, 4, 3, 2, 1, 
+12: Active nodes by column:7, 9, 5, 5, 3, 4, 4, 3, 2, 1, 
+20: Active nodes by column:7, 9, 5, 5, 3, 3, 3, 2, 2, 1, 
+95: Active nodes by column:6, 9, 5, 5, 3, 3, 3, 2, 2, 1, 
+166: Active nodes by column:6, 9, 5, 5, 3, 3, 3, 2, 2, 1, 
+971: Active nodes by column:6, 9, 5, 4, 3, 3, 3, 2, 2, 1, 
+3417: Active nodes by column:6, 8, 5, 4, 3, 3, 3, 2, 2, 1, 
+3819: Active nodes by column:6, 8, 5, 4, 2, 3, 3, 2, 2, 1, 
