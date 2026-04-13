@@ -68,6 +68,10 @@ double fitepsilon = FIT_EPSILON; //Splňuje cíl operace v epsilon zlomku popula
 int fitnessepsilon = 0; //Nastaven v main(). Epsilon přepočítán na počet správných výsledků.
 int maxblkfitness = PARAM_M * PARAM_N; //max. hodnota fitness obsahu obvodu
 
+// Adaptive epsilon: start stricter, relax toward FIT_EPSILON over time.
+// Linear schedule: start at fitepsilon_start and decay to FIT_EPSILON.
+double fitepsilon_start = 0.98;
+
 typedef struct { //struktura obsahujici mozne hodnoty vstupnich poli chromozomu pro urcity sloupec
     int pocet;   //pouziva se pri generovani noveho cisla pri mutaci
     int *hodnoty;
@@ -770,6 +774,8 @@ int main(int argc, char* argv[])
             }
             for (int j=outputidx; j < outputidx+param_out; j++)  //napojeni vystupu
                 *p_chrom++ = rand() % maxidx_out;
+
+            precompute_active(i);
         }
 
         // If chrin (CHROMOZOME_LOAD) defined, put it into the first population.
@@ -806,7 +812,14 @@ int main(int argc, char* argv[])
         //-----------------------------------------------------------------------
         param_generaci = 0;
         maxfitpop = 0;
+        double current_fitepsilon = std::max(fitepsilon, std::min(1.0, fitepsilon_start));
         while (param_generaci++ < PARAM_GENERATIONS) {
+            // Relax epsilon linearly from start to target across generations.
+            double linear_progress = ((fitepsilon_start - fitepsilon) / (double)PARAM_GENERATIONS) * (((param_generaci - last_improvement) + 1000) / 1000);
+            current_fitepsilon -= linear_progress;
+            if (current_fitepsilon < fitepsilon) current_fitepsilon = fitepsilon;
+            fitnessepsilon = (int)(maxfitness * current_fitepsilon);
+
             //-----------------------------------------------------------------------
             //Periodicky vypis chromozomu populace
             //-----------------------------------------------------------------------
@@ -860,16 +873,23 @@ int main(int argc, char* argv[])
                     if (blk <= bestblk) {
 
                         if (blk < bestblk) {
-                            printf("Generation:%d\t\tbestblk b:%d\n",param_generaci,blk);
+                            printf("Generation:%d\t\tbestblk b:%d with epsilon: %f\n",param_generaci,blk,current_fitepsilon);
                             log = true;
                             last_improvement = param_generaci;
                         }
                         
                         if (blk < bestblk || bestfit <= fitt[i]) {
+                            int prev_bestfit = bestfit;
+                            int prev_bestblk = bestblk;
+                            int prev_bestidx = bestfit_idx;
+                            if (bestfit < fitt[i]) {
+                                printf("Generation:%d\t\t Improved fitt:%d -> %d\n", param_generaci, bestfit, fitt[i]);
+                                last_improvement = param_generaci;
+                            }
                             bestfit_idx = i;
                             bestfit = fitt[i];
                             bestblk = blk;
-                            log_active_nodes_by_column(stdout, bestfit_idx);
+                            // log_active_nodes_by_column(stdout, bestfit_idx);
                         }
                     }
                 } else if (fitt[i] >= bestfit) {
@@ -890,7 +910,7 @@ int main(int argc, char* argv[])
             //-----------------------------------------------------------------------
             // Vypis fitness populace do xls souboru pri zmene fitness populace/poctu bloku
             //-----------------------------------------------------------------------
-            if ((fitpop > maxfitpop) || (log)) {
+            if (log) {
                print_xls(xlsfil);
 
                maxfitpop = fitpop;
