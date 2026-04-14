@@ -459,7 +459,7 @@ def main() -> int:
         params = {
             "POPULACE_MAX": trial.suggest_int("POPULACE_MAX", 4, 64),
             "MUTACE_MAX": trial.suggest_int("MUTACE_MAX", 2, 24),
-            "N_SHUFFLE": trial.suggest_int("N_SHUFFLE", 100, 20000, log=True),
+            "N_SHUFFLE": trial.suggest_int("N_SHUFFLE", 100, 100000, log=True),
             "PARAM_GENERATIONS": 1000000,
         }
         trial.set_user_attr("full_params", params)

@@ -8,7 +8,7 @@
 #if defined(__AVX2__)
     #include <immintrin.h>
     #define SIMD_WIDTH 8
-    #define SIMD_TYPE SIMD_TYPE
+    #define SIMD_TYPE __m256i
 #elif defined(__ARM_NEON) || defined(__aarch64__)
     #include <arm_neon.h>
     #define SIMD_WIDTH 4
@@ -576,7 +576,7 @@ void horizontal_migrate(int popi) {
                 break;
             }
         }
-        if (flat_b == -1) continue;           // no inactive slot in col_b
+        if (flat_b == -1) continue;
 
         int out_b = param_in + flat_b;
 
@@ -591,7 +591,6 @@ void horizontal_migrate(int popi) {
         }
         if (!safe) continue;
 
-        // Swap the two gene triples
         int* gene_a = p_chrom + flat_a * 3;
         int* gene_b = p_chrom + flat_b * 3;
         int tmp[3];
@@ -599,9 +598,7 @@ void horizontal_migrate(int popi) {
         memcpy(gene_a, gene_b, 3 * sizeof(int));
         memcpy(gene_b, tmp,    3 * sizeof(int));
 
-        // Remap all references out_a <-> out_b throughout the chromosome.
-        // Gene inputs of the swapped nodes themselves won't be touched:
-        // both in1/in2 of either node are < min(out_a, out_b) by construction.
+        // Remap all out_a to out_b throughout the chromosome.
         for (int i = 0; i < outputidx; i += 3) {
             for (int k = 0; k < 2; k++) {
                 if      (p_chrom[i+k] == out_a) p_chrom[i+k] = out_b;
@@ -614,7 +611,7 @@ void horizontal_migrate(int popi) {
             else if (o == out_b) o = out_a;
         }
 
-        // One migration per call — caller loops over population
+        // One migration per call
         break;
     }
 }
@@ -658,7 +655,7 @@ int main(int argc, char* argv[])
     fitnessepsilon = (int)(maxfitness * fitepsilon);
     assert(maxfitness + maxblkfitness > 0); //Sanity check
 
-    int seed = (unsigned) time(NULL);
+    unsigned seed = 1776116149;
     srand(seed); //inicializace pseudonahodneho generatoru
     printf("Seed of run/s is %d\n", seed);
 
