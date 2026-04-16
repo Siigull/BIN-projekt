@@ -1,0 +1,12 @@
+{
+  "error": "Execution failed\nstdout:\n\nstderr:\n\n",
+  "params": {
+    "MUTACE_MAX": 17,
+    "N_SHUFFLE": 3904,
+    "PARAM_GENERATIONS": 1000000,
+    "POPULACE_MAX": 46
+  },
+  "run_name": "optuna_trial_25",
+  "status": "failed",
+  "trial": 25
+}

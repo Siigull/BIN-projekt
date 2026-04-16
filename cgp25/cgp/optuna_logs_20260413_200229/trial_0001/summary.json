@@ -1,0 +1,12 @@
+{
+  "error": "Execution timed out before final stats were printed\nstdout:\n\nstderr:\n\n",
+  "params": {
+    "MUTACE_MAX": 8,
+    "N_SHUFFLE": 15500,
+    "PARAM_GENERATIONS": 1000000,
+    "POPULACE_MAX": 56
+  },
+  "run_name": "optuna_trial_1",
+  "status": "failed",
+  "trial": 1
+}

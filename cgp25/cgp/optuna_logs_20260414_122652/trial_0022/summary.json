@@ -1,0 +1,13 @@
+{
+  "error": "'SHUFFLE_COUNT'",
+  "params": {
+    "MUTACE_MAX": 20,
+    "N_SHUFFLE": 4482,
+    "PARAM_GENERATIONS": 1000000,
+    "POPULACE_MAX": 44,
+    "SHUFFLE_COUNT": 2
+  },
+  "run_name": "optuna_trial_22",
+  "status": "failed",
+  "trial": 22
+}
