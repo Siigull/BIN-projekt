@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
 import optuna
 from optuna.distributions import IntDistribution
@@ -63,14 +63,14 @@ SCRIPT_LINE_RE_ALT = re.compile(
 )
 
 
-@dataclass
 class RunResult:
-    blk: int
-    blk_max: int
-    fitness: int
-    fitness_max: int
-    stdout: str
-    stderr: str
+    def __init__(self, blk, blk_max, fitness, fitness_max, stdout, stderr):
+        self.blk = blk
+        self.blk_max = blk_max
+        self.fitness = fitness
+        self.fitness_max = fitness_max
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 def read_header() -> str:
@@ -89,7 +89,7 @@ def prepare_trial_root() -> pathlib.Path:
     return trial_root
 
 
-def set_defines(header_text: str, values: dict[str, int]) -> str:
+def set_defines(header_text, values):
     updated = header_text
     for key, value in values.items():
         pattern = DEFINE_PATTERNS[key]
@@ -100,8 +100,8 @@ def set_defines(header_text: str, values: dict[str, int]) -> str:
     return updated
 
 
-def extract_defines(header_text: str, keys: list[str]) -> dict[str, int]:
-    out: dict[str, int] = {}
+def extract_defines(header_text, keys):
+    out = {}
     for key in keys:
         pattern = DEFINE_PATTERNS[key]
         match = pattern.search(header_text)
@@ -111,18 +111,19 @@ def extract_defines(header_text: str, keys: list[str]) -> dict[str, int]:
     return out
 
 
-def run_cmd(cmd: list[str], timeout: int, cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
+def run_cmd(cmd, timeout, cwd):
     return subprocess.run(
         cmd,
         cwd=cwd,
-        capture_output=True,
-        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
         timeout=timeout,
         check=False,
     )
 
 
-def parse_run_output(stdout: str, stderr: str) -> RunResult:
+def parse_run_output(stdout, stderr):
     blk_match = BLK_RE.search(stdout)
     fit_match = FIT_RE.search(stdout)
     if not blk_match:
@@ -140,7 +141,7 @@ def parse_run_output(stdout: str, stderr: str) -> RunResult:
     )
 
 
-def build_and_run(run_name: str, build_timeout: int, run_timeout: int, trial_root: pathlib.Path) -> RunResult:
+def build_and_run(run_name, build_timeout, run_timeout, trial_root):
     build = run_cmd(["make"], timeout=build_timeout, cwd=trial_root)
     if build.returncode != 0:
         raise RuntimeError(
@@ -174,7 +175,7 @@ def build_and_run(run_name: str, build_timeout: int, run_timeout: int, trial_roo
     return parse_run_output(run.stdout, run.stderr)
 
 
-def run_post_trial_plots(trial_root: pathlib.Path, run_name: str) -> None:
+def run_post_trial_plots(trial_root, run_name):
     col_input = trial_root / f"{run_name}_col.txt"
     xls_input = trial_root / f"{run_name}.xls"
     if not col_input.is_file() or not xls_input.is_file():
@@ -193,8 +194,9 @@ def run_post_trial_plots(trial_root: pathlib.Path, run_name: str) -> None:
             subprocess.run(
                 cmd,
                 cwd=trial_root,
-                capture_output=True,
-                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
                 timeout=300,
                 check=False,
             )
@@ -202,15 +204,7 @@ def run_post_trial_plots(trial_root: pathlib.Path, run_name: str) -> None:
             print(f"plot skip ({run_name}): {exc}", file=sys.stderr, flush=True)
 
 
-def save_trial_logs(
-    trial_root: pathlib.Path,
-    logs_root: pathlib.Path,
-    trial_number: int,
-    run_name: str,
-    params: dict[str, int],
-    result: RunResult | None,
-    error: str | None,
-) -> None:
+def save_trial_logs(trial_root, logs_root, trial_number, run_name, params, result, error):
     trial_dir = logs_root / f"trial_{trial_number:04d}"
     trial_dir.mkdir(parents=True, exist_ok=True)
 
@@ -251,7 +245,7 @@ def save_trial_logs(
     )
 
 
-def search_distributions() -> dict[str, IntDistribution]:
+def search_distributions():
     return {
         "POPULACE_MAX": IntDistribution(4, 64),
         "MUTACE_MAX": IntDistribution(2, 24),
@@ -260,7 +254,7 @@ def search_distributions() -> dict[str, IntDistribution]:
     }
 
 
-def add_seed_trials(study: optuna.Study, seed_summary_paths: list[str]) -> int:
+def add_seed_trials(study, seed_summary_paths):
     if not seed_summary_paths:
         return 0
 
@@ -321,7 +315,7 @@ def add_seed_trials(study: optuna.Study, seed_summary_paths: list[str]) -> int:
     return added
 
 
-def trial_signature(value: float, params: dict[str, int]) -> tuple[int, int, int, int, float]:
+def trial_signature(value, params):
     return (
         int(params["POPULACE_MAX"]),
         int(params["MUTACE_MAX"]),
@@ -331,7 +325,7 @@ def trial_signature(value: float, params: dict[str, int]) -> tuple[int, int, int
     )
 
 
-def parse_seed_trial_line(line: str) -> tuple[float, dict[str, int]] | None:
+def parse_seed_trial_line(line):
     m = TRIAL_LINE_RE.search(line)
     if m:
         value = float(m.group(1))
@@ -355,13 +349,13 @@ def parse_seed_trial_line(line: str) -> tuple[float, dict[str, int]] | None:
     return value, full_params
 
 
-def add_seed_trials_from_lines(study: optuna.Study, lines: list[str]) -> int:
+def add_seed_trials_from_lines(study, lines):
     if not lines:
         return 0
 
     dists = search_distributions()
     added = 0
-    seen: set[tuple[int, int, int, float]] = set()
+    seen = set()
     for t in study.trials:
         if t.value is None or not t.params:
             continue
@@ -405,8 +399,8 @@ def add_seed_trials_from_lines(study: optuna.Study, lines: list[str]) -> int:
     return added
 
 
-def read_seed_lines_from_files(paths: list[str]) -> list[str]:
-    lines: list[str] = []
+def read_seed_lines_from_files(paths):
+    lines = []
     for path_str in paths:
         p = pathlib.Path(path_str)
         if not p.is_absolute():
@@ -468,13 +462,13 @@ def main() -> int:
     logs_root.mkdir(parents=True, exist_ok=False)
     print(f"Run logs directory: {logs_root}", flush=True)
 
-    def objective(trial: optuna.trial.Trial) -> float:
+    def objective(trial):
         # param_generations = trial.suggest_int("PARAM_GENERATIONS", 40000, 400000, log=True)
         # n_shuffle_max = max(100, param_generations // 2)
         params = {
-            "POPULACE_MAX": trial.suggest_int("POPULACE_MAX", 4, 64),
+            "POPULACE_MAX": trial.suggest_int("POPULACE_MAX", 32, 128),
             "MUTACE_MAX": trial.suggest_int("MUTACE_MAX", 2, 24),
-            "N_SHUFFLE": trial.suggest_int("N_SHUFFLE", 100, 100000, log=True),
+            "N_SHUFFLE": trial.suggest_int("N_SHUFFLE", 10, 100000, log=True),
             "SHUFFLE_COUNT": trial.suggest_int("SHUFFLE_COUNT", 1, 16),
             "PARAM_GENERATIONS": 1000000,
         }
@@ -482,8 +476,8 @@ def main() -> int:
 
         trial_root = prepare_trial_root()
         run_name = f"optuna_trial_{trial.number}"
-        result: RunResult | None = None
-        error: str | None = None
+        result = None
+        error = None
         try:
             trial_header = set_defines(original_header, params)
             (trial_root / "cgp.h").write_text(trial_header, encoding="utf-8")

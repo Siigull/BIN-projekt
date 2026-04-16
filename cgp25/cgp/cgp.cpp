@@ -924,6 +924,7 @@ int main(int argc, char* argv[])
             FILE *chrfil = fopen(fn,"wb");
             fprintf(chrfil, POPIS);
             print_chrom(chrfil, (chromozom)populace[bestfit_idx]);
+            print_chrom(colcount, (chromozom)populace[bestfit_idx]);
             fclose(chrfil);
         }
 

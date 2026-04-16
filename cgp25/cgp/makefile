@@ -9,7 +9,7 @@ endif
 all:    cgp
 
 cgp:    cgp.cpp cgp.h data/*.h
-	clang++ cgp.cpp -std=c++20 -O3 -fsanitize=address $(SIMD_FLAG) -o cgp
+	g++ cgp.cpp -std=c++20 -O3 -fsanitize=address $(SIMD_FLAG) -o cgp
 
 old:    cgpold.cpp cgp.h data/*.h
 	g++ cgpold.cpp -O3 -mavx2 -o cgpold

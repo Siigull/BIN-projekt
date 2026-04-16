@@ -1,0 +1,17 @@
+{
+  "blk": 35,
+  "blk_max": 100,
+  "error": null,
+  "fitness": 502472,
+  "fitness_max": 524288,
+  "params": {
+    "MUTACE_MAX": 12,
+    "N_SHUFFLE": 79629,
+    "PARAM_GENERATIONS": 1000000,
+    "POPULACE_MAX": 64,
+    "SHUFFLE_COUNT": 5
+  },
+  "run_name": "optuna_trial_43",
+  "status": "ok",
+  "trial": 43
+}
