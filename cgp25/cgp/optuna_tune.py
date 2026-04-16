@@ -27,6 +27,7 @@ DEFINE_KEYS = [
     "POPULACE_MAX",
     "MUTACE_MAX",
     "N_SHUFFLE",
+    "SHUFFLE_COUNT",
     "PARAM_GENERATIONS",
 ]
 
@@ -34,7 +35,13 @@ SEARCH_PARAM_KEYS = [
     "POPULACE_MAX",
     "MUTACE_MAX",
     "N_SHUFFLE",
+    "SHUFFLE_COUNT",
 ]
+
+
+DEFAULT_SEARCH_PARAM_VALUES = {
+    "SHUFFLE_COUNT": 3,
+}
 
 
 DEFINE_PATTERNS = {
@@ -248,7 +255,8 @@ def search_distributions() -> dict[str, IntDistribution]:
     return {
         "POPULACE_MAX": IntDistribution(4, 64),
         "MUTACE_MAX": IntDistribution(2, 24),
-        "N_SHUFFLE": IntDistribution(100, 50000, log=True),
+        "N_SHUFFLE": IntDistribution(100, 100000, log=True),
+        "SHUFFLE_COUNT": IntDistribution(1, 16),
     }
 
 
@@ -272,7 +280,10 @@ def add_seed_trials(study: optuna.Study, seed_summary_paths: list[str]) -> int:
                 raise ValueError("summary must contain params and blk")
 
             raw_params = data["params"]
-            params = {k: int(raw_params[k]) for k in SEARCH_PARAM_KEYS}
+            params = {
+                k: int(raw_params[k]) if k in raw_params else DEFAULT_SEARCH_PARAM_VALUES[k]
+                for k in SEARCH_PARAM_KEYS
+            }
             value = float(data["blk"])
 
             full_params = {}
@@ -310,11 +321,12 @@ def add_seed_trials(study: optuna.Study, seed_summary_paths: list[str]) -> int:
     return added
 
 
-def trial_signature(value: float, params: dict[str, int]) -> tuple[int, int, int, float]:
+def trial_signature(value: float, params: dict[str, int]) -> tuple[int, int, int, int, float]:
     return (
         int(params["POPULACE_MAX"]),
         int(params["MUTACE_MAX"]),
         int(params["N_SHUFFLE"]),
+        int(params["SHUFFLE_COUNT"]),
         float(value),
     )
 
@@ -334,7 +346,10 @@ def parse_seed_trial_line(line: str) -> tuple[float, dict[str, int]] | None:
     if not isinstance(raw_params, dict):
         raise ValueError("parameters payload is not a dict")
 
-    params = {k: int(raw_params[k]) for k in SEARCH_PARAM_KEYS}
+    params = {
+        k: int(raw_params[k]) if k in raw_params else DEFAULT_SEARCH_PARAM_VALUES[k]
+        for k in SEARCH_PARAM_KEYS
+    }
     full_params = dict(params)
     full_params["PARAM_GENERATIONS"] = int(raw_params.get("PARAM_GENERATIONS", 50000))
     return value, full_params
@@ -460,6 +475,7 @@ def main() -> int:
             "POPULACE_MAX": trial.suggest_int("POPULACE_MAX", 4, 64),
             "MUTACE_MAX": trial.suggest_int("MUTACE_MAX", 2, 24),
             "N_SHUFFLE": trial.suggest_int("N_SHUFFLE", 100, 100000, log=True),
+            "SHUFFLE_COUNT": trial.suggest_int("SHUFFLE_COUNT", 1, 16),
             "PARAM_GENERATIONS": 1000000,
         }
         trial.set_user_attr("full_params", params)

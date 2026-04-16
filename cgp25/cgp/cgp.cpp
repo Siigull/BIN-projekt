@@ -840,7 +840,9 @@ int main(int argc, char* argv[])
                 last_improvement = param_generaci;
                 for (int i=0; i < POPULACE_MAX; i++) {
                     vertical_shuffle(i);
-                    horizontal_migrate(i);
+                    for (int j=0; j < SHUFFLE_COUNT; j++) {
+                        horizontal_migrate(i);
+                    }
                     precompute_active(i);
                 }
                 log_active_nodes_by_column(colcount, bestfit_idx);
