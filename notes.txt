@@ -6,3 +6,5 @@ Thinking about having a optimization which reshapes the graph during.
 Also try changing globals to const. Dont know what will compiler do.
 
 I can try to think about epsilon error in terms of distance for some circuits.
+
+horizontal shuffle creates "rivers" empty cols. They are usually in the middle or end. Maybe move them to the start?
